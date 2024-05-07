@@ -1,0 +1,130 @@
+From d2a81766c9dc182b870698248b65a90e19a46cab Mon Sep 17 00:00:00 2001
+From: Cheng Nie <niecheng1@uniontech.com>
+Date: Mon, 29 Apr 2024 10:45:44 +0800
+Subject: [PATCH 3/3] displaylink: Add the damage refresh function for rotato
+ in the sna mode
+
+Signed-off-by: Cheng Nie <niecheng1@uniontech.com>
+
+diff --git a/src/sna/sna_accel.c b/src/sna/sna_accel.c
+index 75cb4fe..2ae63dd 100644
+--- a/src/sna/sna_accel.c
++++ b/src/sna/sna_accel.c
+@@ -17720,16 +17720,8 @@ static void sna_rotate_composite(ScreenPtr screen, PixmapPtr src, PixmapPtr dst,
+ 	n = region_num_rects(&region);
+ 	b = region_rects(&region);
+ 	do {
+-		BoxRec box = *b;
+-		transformed_box_to_src(&box, dirty);
+-
+-		DBG(("%s: (%d, %d)x(%d, %d) -> (%d, %d), (%d, %d)\n",
+-			__FUNCTION__,
+-			b->x1, b->y1, b->x2-b->x1, b->y2-b->y1,
+-			box.x1, box.y1, box.x2, box.y2));
+-
+ 		CompositePicture(PictOpSrc, srcPict, NULL, dstPict,
+-					sx + box.x1, sy + box.y1,
++					sx + b->x1, sy + b->y1,
+ 					0, 0,
+ 					b->x1, b->y1,
+ 					b->x2 - b->x1, b->y2 - b->y1);
+@@ -17741,6 +17733,56 @@ free_src:
+ 
+ }
+ 
++static void sna_accel_get_damage(PixmapDirtyUpdatePtr dirty, RegionPtr pixregion)
++{
++    /* the coordinate is rotated in slave and compared to the coordinate of
++     * master and slave screen*/
++	RegionPtr region = DamageRegion(dirty->damage);
++	BoxRec box;
++	PixmapPtr dst = PixmapDirtyPrimary(dirty);
++	int16_t dx, dy;
++	unsigned num_cliprects;
++	box.x1 = 0;
++    box.y1 = 0;
++    if (dirty->rotation == RR_Rotate_90 ||
++        dirty->rotation == RR_Rotate_270) {
++        box.x2 = dst->drawable.height;
++        box.y2 = dst->drawable.width;
++    } else {
++        box.x2 = dst->drawable.width;
++        box.y2 = dst->drawable.height;
++    }
++    RegionInit(pixregion, &box, 1);
++    /* translate coordinate to relative coordinate of master and slave screen*/
++    RegionTranslate(pixregion, dirty->x, dirty->y);
++    RegionIntersect(pixregion, pixregion, region);
++
++    if (RegionNil(pixregion)) {
++        return;
++    }
++
++	num_cliprects = REGION_NUM_RECTS(pixregion);
++    if (num_cliprects && dirty->rotation != RR_Rotate_0) {
++        BoxPtr rect = REGION_RECTS(pixregion);
++        int i;
++		if(num_cliprects != 1) {
++			pixman_f_transform_bounds(&dirty->f_inverse, &pixregion->extents);
++		}
++        for (i = 0; i < num_cliprects; i++, rect++) {
++			pixman_f_transform_bounds(&dirty->f_inverse, rect);
++        }
++	} else {
++		dx = -dirty->x;
++		dy = -dirty->y;
++#if HAS_DIRTYTRACKING2
++		dx += dirty->dst_x;
++		dy += dirty->dst_y;
++#endif
++		RegionTranslate(pixregion, dx, dy);
++	}
++	return;
++}
++
+ static void sna_accel_post_damage(struct sna *sna)
+ {
+ #if HAS_PIXMAP_SHARING
+@@ -17765,34 +17807,17 @@ static void sna_accel_post_damage(struct sna *sna)
+ #endif
+ 		dst = PixmapDirtyPrimary(dirty);
+ 
+-		region.extents.x1 = dirty->x;
+-		region.extents.x2 = dirty->x + dst->drawable.width;
+-		region.extents.y1 = dirty->y;
+-		region.extents.y2 = dirty->y + dst->drawable.height;
+-		region.data = NULL;
+-
+-		DBG(("%s: pushing damage ((%d, %d), (%d, %d))x%d to slave pixmap=%d, ((%d, %d), (%d, %d))\n", __FUNCTION__,
+-		     damage->extents.x1, damage->extents.y1,
+-		     damage->extents.x2, damage->extents.y2,
+-		     region_num_rects(damage),
+-		     dst->drawable.serialNumber,
+-		     region.extents.x1, region.extents.y1,
+-		     region.extents.x2, region.extents.y2));
+-
+-		if (dirty->rotation == RR_Rotate_0){
+-			RegionIntersect(&region, &region, damage);
+-		}
+-
+-		if (RegionNil(&region))
+-			goto skip;
+-
+ 		dx = -dirty->x;
+ 		dy = -dirty->y;
+ #if HAS_DIRTYTRACKING2
+ 		dx += dirty->dst_x;
+ 		dy += dirty->dst_y;
+ #endif
+-		RegionTranslate(&region, dx, dy);
++		
++		sna_accel_get_damage(dirty, &region);
++		if (RegionNil(&region))
++			goto skip;
++
+ 		DamageRegionAppend(&PixmapDirtyDst(dirty)->drawable, &region);
+ 
+ 		DBG(("%s: slave:  ((%d, %d), (%d, %d))x%d\n", __FUNCTION__,
+-- 
+2.33.1
+

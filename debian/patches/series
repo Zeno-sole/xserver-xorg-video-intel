@@ -1,1 +1,5 @@
 sna-sse2.diff 
+add-10-intel.patch
+feat-intel-integrated-graphics-before-10th-uses-inte.patch
+0002-fix-sna-can-t-rotate-on-displaylink.patch
+0003-displaylink-Add-the-damage-refresh-function-for-rota.patch

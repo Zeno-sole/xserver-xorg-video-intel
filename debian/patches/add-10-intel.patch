@@ -1,0 +1,9 @@
+
+--- /dev/null
++++ xserver-xorg-video-intel-2.99.917+git20210115/conf/10-intel.conf
+@@ -0,0 +1,5 @@
++Section "OutputClass"
++        Identifier "intel"
++        MatchDriver "i915"
++        Driver "intel"
++EndSection

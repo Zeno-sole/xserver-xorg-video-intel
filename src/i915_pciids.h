@@ -533,12 +533,7 @@
 	INTEL_CFL_U_GT3_IDS(info), \
 	INTEL_WHL_U_GT1_IDS(info), \
 	INTEL_WHL_U_GT2_IDS(info), \
-	INTEL_WHL_U_GT3_IDS(info), \
-	INTEL_AML_CFL_GT2_IDS(info), \
-	INTEL_CML_GT1_IDS(info), \
-	INTEL_CML_GT2_IDS(info), \
-	INTEL_CML_U_GT1_IDS(info), \
-	INTEL_CML_U_GT2_IDS(info)
+	INTEL_WHL_U_GT3_IDS(info)
 
 /* CNL */
 #define INTEL_CNL_PORT_F_IDS(info) \

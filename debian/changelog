@@ -1,3 +1,16 @@
+xserver-xorg-video-intel (2:2.99.917+git20210115-1deepin1) unstable; urgency=medium
+
+  * feat:intel integrated graphics before 10th  uses intel driver instead of modesetting
+  * fix: sna can't rotate on displaylink
+  	add sna_rotate_composite to fix sna can't rotate on displaylink:
+ 	xserver driver modeseting use PixmapDirtyCompositeRotate to do
+ 	roated composite on displaylink, and it works fine.
+ 	refer to PixmapDirtyCompositeRotate and sna_crtc_redisplay__fallback,
+ 	we get sna_rotate_composite.
+  * displaylink: Add the damage refresh function for rotato in the sna mode
+
+ -- LiChengGang <lichenggang@uniontech.com>  Tue, 07 May 2024 16:32:39 +0800
+
 xserver-xorg-video-intel (2:2.99.917+git20210115-1deepin) unstable; urgency=medium
 
   * update

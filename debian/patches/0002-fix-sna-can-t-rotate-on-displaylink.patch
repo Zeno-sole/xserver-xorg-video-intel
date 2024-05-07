@@ -1,0 +1,214 @@
+From 053987d5a7a73fdc6af46dd11ac8cfde6be898bc Mon Sep 17 00:00:00 2001
+From: hongao <hongao@uniontech.com>
+Date: Fri, 22 Mar 2024 14:20:31 +0800
+Subject: [PATCH 2/3] fix: sna can't rotate on displaylink
+
+add sna_rotate_composite to fix sna can't rotate on displaylink:
+xserver driver modeseting use PixmapDirtyCompositeRotate to do
+roated composite on displaylink, and it works fine.
+refer to PixmapDirtyCompositeRotate and sna_crtc_redisplay__fallback,
+we get sna_rotate_composite.
+
+Signed-off-by: hongao <hongao@uniontech.com>
+
+diff --git a/src/sna/sna_accel.c b/src/sna/sna_accel.c
+index 89b82af..75cb4fe 100644
+--- a/src/sna/sna_accel.c
++++ b/src/sna/sna_accel.c
+@@ -55,6 +55,7 @@
+ #include <sys/time.h>
+ #include <sys/mman.h>
+ #include <sys/ioctl.h>
++#include <sys/fcntl.h>
+ #include <unistd.h>
+ 
+ #ifdef HAVE_VALGRIND
+@@ -17674,6 +17675,72 @@ static bool sna_accel_do_expire(struct sna *sna)
+ 	return false;
+ }
+ 
++static void transformed_box_to_src(BoxRec *box, PixmapDirtyUpdatePtr dirty)
++{
++	pixman_f_transform_bounds(&dirty->f_transform, box);
++	box->x1 -= dirty->x;
++	box->x2 -= dirty->x;
++	box->y1 -= dirty->y;
++	box->y2 -= dirty->y;
++}
++
++static void sna_rotate_composite(ScreenPtr screen, PixmapPtr src, PixmapPtr dst, PixmapDirtyUpdatePtr dirty, RegionRec region, int16_t dx, int16_t dy)
++{
++	int16_t sx = -dx, sy = -dy;
++	PictFormatPtr format;
++	PictTransform T;
++	PicturePtr srcPict, dstPict;
++	int n, depth, error;
++	const BoxRec *b;
++	DrawablePtr draw = &dst->drawable;
++
++	DBG(("%s: compositing transformed damage boxes, target handle=%d\n", __FUNCTION__, bo->handle));
++
++	error = sna_render_format_for_depth(draw->depth);
++	depth = PIXMAN_FORMAT_DEPTH(error);
++	format = PictureMatchFormat(screen, depth, error);
++	if (format == NULL) {
++		DBG(("%s: can't find format for depth=%d [%08x]\n",
++			__FUNCTION__, depth, error));
++		return;
++	}
++
++	srcPict = CreatePicture(None, &src->drawable, format, 0, NULL, serverClient, &error);
++	if (!srcPict)
++		return;
++
++	SetPictureTransform(srcPict, &dirty->transform);
++	sx = 0;
++	sy = 0;
++
++	dstPict = CreatePicture(None, draw, format, 0, NULL, serverClient, &error);
++	if (!dstPict)
++		goto free_src;
++
++	n = region_num_rects(&region);
++	b = region_rects(&region);
++	do {
++		BoxRec box = *b;
++		transformed_box_to_src(&box, dirty);
++
++		DBG(("%s: (%d, %d)x(%d, %d) -> (%d, %d), (%d, %d)\n",
++			__FUNCTION__,
++			b->x1, b->y1, b->x2-b->x1, b->y2-b->y1,
++			box.x1, box.y1, box.x2, box.y2));
++
++		CompositePicture(PictOpSrc, srcPict, NULL, dstPict,
++					sx + box.x1, sy + box.y1,
++					0, 0,
++					b->x1, b->y1,
++					b->x2 - b->x1, b->y2 - b->y1);
++	} while (b++, --n);
++
++	FreePicture(dstPict, None);
++free_src:
++	FreePicture(srcPict, None);
++
++}
++
+ static void sna_accel_post_damage(struct sna *sna)
+ {
+ #if HAS_PIXMAP_SHARING
+@@ -17712,7 +17779,10 @@ static void sna_accel_post_damage(struct sna *sna)
+ 		     region.extents.x1, region.extents.y1,
+ 		     region.extents.x2, region.extents.y2));
+ 
+-		RegionIntersect(&region, &region, damage);
++		if (dirty->rotation == RR_Rotate_0){
++			RegionIntersect(&region, &region, damage);
++		}
++
+ 		if (RegionNil(&region))
+ 			goto skip;
+ 
+@@ -17742,41 +17812,46 @@ fallback:
+ 
+ 			if (sigtrap_get() == 0) {
+ 				assert(src->drawable.bitsPerPixel == dst->drawable.bitsPerPixel);
+-				do {
+-					DBG(("%s: copy box (%d, %d)->(%d, %d)x(%d, %d)\n",
+-					     __FUNCTION__,
+-					     box->x1 - dx, box->y1 - dy,
+-					     box->x1, box->y1,
+-					     box->x2 - box->x1, box->y2 - box->y1));
+-
+-					assert(box->x2 > box->x1);
+-					assert(box->y2 > box->y1);
+ 
+-					assert(box->x1 - dx >= 0);
+-					assert(box->y1 - dy >= 0);
+-					assert(box->x2 - dx <= src->drawable.width);
+-					assert(box->y2 - dy <= src->drawable.height);
+-
+-					assert(box->x1 >= 0);
+-					assert(box->y1 >= 0);
+-					assert(box->x2 <= src->drawable.width);
+-					assert(box->y2 <= src->drawable.height);
+-
+-					assert(has_coherent_ptr(sna, sna_pixmap(src), MOVE_READ));
+-					assert(has_coherent_ptr(sna, sna_pixmap(dst), MOVE_WRITE));
+-					assert(src->devKind);
+-					assert(dst->devKind);
+-					memcpy_blt(src->devPrivate.ptr,
+-						   dst->devPrivate.ptr,
+-						   src->drawable.bitsPerPixel,
+-						   src->devKind, dst->devKind,
+-						   box->x1 - dx,      box->y1 - dy,
+-						   box->x1,           box->y1,
+-						   box->x2 - box->x1, box->y2 - box->y1);
+-					box++;
+-				} while (--n);
+-				sigtrap_put();
++				if (dirty->rotation == RR_Rotate_0){
++					do {
++						DBG(("%s: copy box (%d, %d)->(%d, %d)x(%d, %d)\n",
++							__FUNCTION__,
++							box->x1 - dx, box->y1 - dy,
++							box->x1, box->y1,
++							box->x2 - box->x1, box->y2 - box->y1));
++
++						assert(box->x2 > box->x1);
++						assert(box->y2 > box->y1);
++
++						assert(box->x1 - dx >= 0);
++						assert(box->y1 - dy >= 0);
++						assert(box->x2 - dx <= src->drawable.width);
++						assert(box->y2 - dy <= src->drawable.height);
++
++						assert(box->x1 >= 0);
++						assert(box->y1 >= 0);
++						assert(box->x2 <= src->drawable.width);
++						assert(box->y2 <= src->drawable.height);
++
++						assert(has_coherent_ptr(sna, sna_pixmap(src), MOVE_READ));
++						assert(has_coherent_ptr(sna, sna_pixmap(dst), MOVE_WRITE));
++						assert(src->devKind);
++						assert(dst->devKind);
++						memcpy_blt(src->devPrivate.ptr,
++							dst->devPrivate.ptr,
++							src->drawable.bitsPerPixel,
++							src->devKind, dst->devKind,
++							box->x1 - dx,      box->y1 - dy,
++							box->x1,           box->y1,
++							box->x2 - box->x1, box->y2 - box->y1);
++						box++;
++					} while (--n);
++				} else {
++					sna_rotate_composite(screen, src, dst, dirty, region, dx, dy);
++				}
+ 			}
++			sigtrap_put();
+ 		} else {
+ 			if (!sna_pixmap_move_to_gpu(src, MOVE_READ | MOVE_ASYNC_HINT | __MOVE_FORCE))
+ 				goto fallback;
+@@ -17784,11 +17859,15 @@ fallback:
+ 			if (!sna_pixmap_move_to_gpu(dst, MOVE_READ | MOVE_WRITE | MOVE_ASYNC_HINT | __MOVE_FORCE))
+ 				goto fallback;
+ 
+-			if (!sna->render.copy_boxes(sna, GXcopy,
+-						    &src->drawable, __sna_pixmap_get_bo(src), -dx, -dy,
+-						    &dst->drawable, __sna_pixmap_get_bo(dst),   0,   0,
+-						    box, n, COPY_LAST))
+-				goto fallback;
++			if (dirty->rotation == RR_Rotate_0){
++				if (!sna->render.copy_boxes(sna, GXcopy,
++								&src->drawable, __sna_pixmap_get_bo(src), -dx, -dy,
++								&dst->drawable, __sna_pixmap_get_bo(dst),   0,   0,
++								box, n, COPY_LAST))
++					goto fallback;
++			} else {
++				sna_rotate_composite(screen, src, dst, dirty, region, dx, dy);
++			}
+ 
+ 			/* Before signalling the slave via ProcessPending,
+ 			 * ensure not only the batch is submitted as the
+-- 
+2.33.1
+
